@@ -319,7 +319,7 @@ func (hc *HostClient) createConn() (*clientConn, *list.Element, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := hc.newClientConn(conn, false)
+	c, err := hc.newClientConn(conn)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -518,7 +518,7 @@ func (hc *HostClient) nextAddr() string {
 	return addr
 }
 
-func (hc *HostClient) newClientConn(c network.Conn, singleUse bool) (*clientConn, error) {
+func (hc *HostClient) newClientConn(c net.Conn) (*clientConn, error) {
 	cc := &clientConn{}
 	cc.tconn = c
 	cc.createdTime = time.Now()
@@ -529,7 +529,6 @@ func (hc *HostClient) newClientConn(c network.Conn, singleUse bool) (*clientConn
 	cc.maxConcurrentStreams = initialMaxConcurrentStreams // "infinite", per spec. Use a smaller value until we have received server settings.
 	cc.peerMaxHeaderListSize = 0xffffffffffffffff         // "infinite", per spec. Use 2^64-1 instead.
 	cc.streams = make(map[uint32]*clientStream)
-	cc.singleUse = singleUse
 	cc.wantSettingsAck = true
 	cc.pings = make(map[[8]byte]chan struct{})
 	cc.reqHeaderMu = make(chan struct{}, 1)
@@ -641,8 +640,6 @@ type clientConn struct {
 	werr error        // first write error that has occurred
 	hbuf bytes.Buffer // HPACK encoder writes into this
 	henc *hpack.Encoder
-
-	singleUse bool
 
 	// PingTimeout is the timeout after which the connection will be closed
 	// if a response to Ping is not received.
@@ -907,7 +904,7 @@ func (cc *clientConn) State() ClientConnState {
 	defer cc.mu.Unlock()
 	return ClientConnState{
 		Closed:               cc.closed,
-		Closing:              cc.closing || cc.singleUse || cc.doNotReuse || cc.goAway != nil,
+		Closing:              cc.closing || cc.doNotReuse || cc.goAway != nil,
 		StreamsActive:        len(cc.streams),
 		StreamsReserved:      cc.streamsReserved,
 		StreamsPending:       cc.pendingRequests,
@@ -923,9 +920,6 @@ type clientConnIdleState struct {
 }
 
 func (cc *clientConn) idleStateLocked() (st clientConnIdleState) {
-	if cc.singleUse && cc.nextStreamID > 1 {
-		return
-	}
 	var maxConcurrentOkay bool
 	if cc.hc.StrictMaxConcurrentStreams {
 		// We'll tell the caller we can take a new request to
@@ -981,7 +975,7 @@ func (cc *clientConn) closeIfIdle() {
 	cc.mu.Unlock()
 
 	if VerboseLogs {
-		hlog.SystemLogger().Infof("HTTP2: Transport closing idle conn %p (forSingleUse=%v, maxStream=%v)", cc, cc.singleUse, nextID-2)
+		hlog.Infof("http2: Transport closing idle conn %p (maxStream=%v)", cc, nextID-2)
 	}
 
 	cc.tconn.Close()
@@ -1172,9 +1166,6 @@ func (cs *clientStream) writeRequest(req *protocol.Request) (err error) {
 		return err
 	}
 	cc.addStreamLocked(cs) // assigns stream ID
-	if req.Header.ConnectionClose() {
-		cc.doNotReuse = true
-	}
 	cc.mu.Unlock()
 
 	// Past this point (where we send request headers), it is possible for
@@ -1776,10 +1767,10 @@ func (cc *clientConn) forgetStreamID(id uint32) {
 	// wake up RoundTrip if there is a pending request.
 	cc.cond.Broadcast()
 
-	closeOnIdle := cc.singleUse || cc.doNotReuse || cc.hc.DisableKeepAlive
+	closeOnIdle := cc.doNotReuse || cc.hc.DisableKeepAlive
 	if closeOnIdle && cc.streamsReserved == 0 && len(cc.streams) == 0 {
 		if VerboseLogs {
-			hlog.SystemLogger().Infof("HTTP2: Transport closing idle conn %p (forSingleUse=%v, maxStream=%v)", cc, cc.singleUse, cc.nextStreamID-2)
+			hlog.Infof("http2: Transport closing idle conn %p (maxStream=%v)", cc, cc.nextStreamID-2)
 		}
 
 		cc.closed = true

@@ -394,10 +394,6 @@ func TestHostClientReusesConns(t *testing.T) {
 		name:     "ReuseConn",
 		modReq:   func(*protocol.Request) {},
 		wantSame: true,
-	}, {
-		name:     "ConnClose",
-		modReq:   func(r *protocol.Request) { r.Header.Set("Connection", "close") },
-		wantSame: false,
 	}} {
 		t.Run("Transport", func(t *testing.T) {
 			testHostClientReusesConns(t, test.wantSame, test.modReq)
@@ -4691,7 +4687,7 @@ func TestHostClientNewClientConnCloseOnWriteError(t *testing.T) {
 	tr := &HostClient{ClientConfig: &config.ClientConfig{DisableKeepAlive: true}}
 	writeErr := errors.New("write error")
 	fakeConn := &fakeConnErr{writeErr: writeErr}
-	_, err := tr.newClientConn(fakeConn, false)
+	_, err := tr.newClientConn(fakeConn)
 	if err != writeErr {
 		t.Fatalf("expected %v, got %v", writeErr, err)
 	}
